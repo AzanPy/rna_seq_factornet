@@ -160,6 +160,75 @@ class ExpressionPipeline:
         self.interpreter = InterpretationMethods(self.model)
         return cv
 
+    def predict_and_report(self, save_dir: str = "./plots"):
+        """
+        Generate predictions, compute metrics, and save diagnostic plots.
+        """
+        import pandas as pd, numpy as np, matplotlib.pyplot as plt, json, os
+        os.makedirs(save_dir, exist_ok=True)
+
+        if self.model is None or self.data is None:
+            raise ValueError("Train model first using train_model()")
+
+        X = self.data["expression_features"]
+        y_true = self.data["expression_targets"].ravel()
+        y_pred = self.model.predict(X).ravel()
+        genes  = np.array(self.data["gene_names"])
+
+        pred_df = pd.DataFrame({
+            "gene_id": genes,
+            "true_expression": y_true,
+            "predicted_expression": y_pred,
+        })
+        pred_df["residual"]  = pred_df["true_expression"] - pred_df["predicted_expression"]
+        pred_df["abs_error"] = pred_df["residual"].abs()
+
+        # metrics
+        ss_res = np.sum((y_true - y_pred)**2)
+        ss_tot = np.sum((y_true - np.mean(y_true))**2)
+        r2  = 0.0 if ss_tot == 0 else 1 - ss_res/ss_tot
+        mae = float(np.mean(np.abs(y_true - y_pred)))
+        mse = float(np.mean((y_true - y_pred)**2))
+        r   = float(np.corrcoef(y_true, y_pred)[0,1]) if np.std(y_true)>0 and np.std(y_pred)>0 else float("nan")
+        metrics = {"r2": r2, "mae": mae, "mse": mse, "pearson_r": r}
+
+        print("\n📈 Prediction Metrics:")
+        for k, v in metrics.items():
+            print(f"   {k:10s}: {v:.4f}")
+
+        # save files
+        pred_df.to_csv(f"{save_dir}/predictions.tsv", sep="\t", index=False)
+        with open(f"{save_dir}/metrics.json", "w") as f: json.dump(metrics, f, indent=2)
+
+        # scatter plot
+        plt.figure(figsize=(5,5))
+        plt.scatter(y_true, y_pred, s=8, alpha=0.6)
+        lims = [min(y_true.min(), y_pred.min()), max(y_true.max(), y_pred.max())]
+        plt.plot(lims, lims, 'k--', lw=1)
+        plt.xlabel("True Expression")
+        plt.ylabel("Predicted Expression")
+        plt.title(f"Predictions (R²={r2:.3f}, r={r:.3f})")
+        plt.tight_layout()
+        plt.savefig(f"{save_dir}/pred_scatter.png", dpi=160)
+        plt.close()
+
+        # residuals histogram
+        plt.figure(figsize=(5,4))
+        plt.hist(pred_df["residual"], bins=40)
+        plt.xlabel("Residual (True - Predicted)")
+        plt.ylabel("Count")
+        plt.title("Residual Distribution")
+        plt.tight_layout()
+        plt.savefig(f"{save_dir}/residuals_hist.png", dpi=160)
+        plt.close()
+
+        # Top mispredicted genes
+        pred_df.sort_values("abs_error", ascending=False).head(50)\
+               .to_csv(f"{save_dir}/top_miss_genes.tsv", sep="\t", index=False)
+
+        print(f"\n✅ Saved prediction report and plots in: {save_dir}")
+        return metrics
+
     def interpret(self, method: str = "bpnet", n_genes: int = 5, **kwargs) -> Dict:
         """Interpret model predictions"""
         if self.interpreter is None:
